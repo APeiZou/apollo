@@ -165,7 +165,7 @@ June 27, 2018
 ## 感知模块
 每个模块的流程图如下所示。
 
-![Image](images/perception_flow_chart_apollo_3.0.png)
+![Image](https://github.com/ApolloAuto/apollo/blob/master/docs/specs/images/perception_flow_chart_apollo_3.0.png)
 
 **图 1: Apollo 3.0的流程图**
 
