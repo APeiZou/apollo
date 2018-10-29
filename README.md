@@ -231,7 +231,7 @@ June 27, 2018
     另一种是CIPV引导的尾随，当检测到无车道线时，当前车辆遵循CIPV的轨迹。 
 
 输出可视化的快照如图2所示。 
-![Image](images/perception_visualization_apollo_3.0.png)
+![Image](https://github.com/ApolloAuto/apollo/blob/master/docs/specs/images/perception_visualization_apollo_3.0.png)
 
 **图 2: Apollo 3.0中感知输出的可视化。左上角是基于图像的输出。左下角显示了对象的3D边界框。左图显示了车道线和物体的三维俯视图。CIPV标有红色边框。黄线表示每辆车的轨迹**
 
