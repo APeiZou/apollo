@@ -2496,3 +2496,1472 @@ Apollo环境启动参见[Apollo 2.5快速上手指南](https://github.com/Apollo
 当需求状态是"已发布"时，点击“下载地图”可进行地图数据下载。如果需要更新地图，请点击“更新地图数据”发起制图流程，需重新进行数据上传及制图流程。
 
 ![](https://github.com/ApolloAuto/apollo/tree/master/docs/quickstart/images/map_collection_Download_ch.png)
+
+
+# ===================
+# 如何添加新的GPS接收器
+
+## 简介
+GPS接收器是一种从GPS卫星上接收信息，然后根据这些信息计算设备地理位置、速度和精确时间的设备。这种设备通常包括一个接收器，一个IMU（Inertial measurement unit，惯性测量单元），一个针对轮编码器的接口以及一个将各传感器获取的数据融合到一起的融合引擎。Apollo系统中默认使用Novatel 板卡，该说明详细介绍如何添加并使用一个新的GPS接收器。
+
+## 添加GPS新接收器的步骤
+请按照下面的步骤添加新的GPS接收器.
+  1. 通过继承基类“Parser”，实现新GPS接收器的数据解析器
+  2. 在Parser类中为新GPS接收器添加新接口
+  3. 在文件`config.proto`中, 为新GPS接收器添加新数据格式
+  4. 在函数`create_parser`（见文件data_parser.cpp）, 为新GPS接收器添加新解析器实例
+
+下面让我们用上面的方法来添加u-blox GPS接收器。
+
+### 步骤 1
+
+通过继承类“Parser”，为新GPS接收器实现新的数据解析器:
+
+```cpp
+class UbloxParser : public Parser {
+public:
+    UbloxParser();
+
+    virtual MessageType get_message(MessagePtr& message_ptr);
+
+private:
+    bool verify_checksum();
+
+    Parser::MessageType prepare_message(MessagePtr& message_ptr);
+
+    // The handle_xxx functions return whether a message is ready.
+    bool handle_esf_raw(const ublox::EsfRaw* raw, size_t data_size);
+    bool handle_esf_ins(const ublox::EsfIns* ins);
+    bool handle_hnr_pvt(const ublox::HnrPvt* pvt);
+    bool handle_nav_att(const ublox::NavAtt *att);
+    bool handle_nav_pvt(const ublox::NavPvt* pvt);
+    bool handle_nav_cov(const ublox::NavCov *cov);
+    bool handle_rxm_rawx(const ublox::RxmRawx *raw);
+
+    double _gps_seconds_base = -1.0;
+
+    double _gyro_scale = 0.0;
+
+    double _accel_scale = 0.0;
+
+    float _imu_measurement_span = 0.0;
+
+    int _imu_frame_mapping = 5;
+
+    double _imu_measurement_time_previous = -1.0;
+
+    std::vector<uint8_t> _buffer;
+
+    size_t _total_length = 0;
+
+    ::apollo::drivers::gnss::Gnss _gnss;
+    ::apollo::drivers::gnss::Imu _imu;
+    ::apollo::drivers::gnss::Ins _ins;
+};
+
+```
+
+### 步骤 2
+
+在Parser类中，为新GPS接收器添加新的接口:
+
+在Parser类中添加函数‘create_ublox‘:
+
+```cpp
+class Parser {
+public:
+    // Return a pointer to a NovAtel parser. The caller should take ownership.
+    static Parser* create_novatel();
+
+    // Return a pointer to a u-blox parser. The caller should take ownership.
+    static Parser* create_ublox();
+
+    virtual ~Parser() {}
+
+    // Updates the parser with new data. The caller must keep the data valid until get_message()
+    // returns NONE.
+    void update(const uint8_t* data, size_t length) {
+        _data = data;
+        _data_end = data + length;
+    }
+
+    void update(const std::string& data) {
+        update(reinterpret_cast<const uint8_t*>(data.data()), data.size());
+    }
+
+    enum class MessageType {
+        NONE,
+        GNSS,
+        GNSS_RANGE,
+        IMU,
+        INS,
+        WHEEL,
+        EPHEMERIDES,
+        OBSERVATION,
+        GPGGA,
+    };
+
+    // Gets a parsed protobuf message. The caller must consume the message before calling another
+    // get_message() or update();
+    virtual MessageType get_message(MessagePtr& message_ptr) = 0;
+
+protected:
+    Parser() {}
+
+    // Point to the beginning and end of data. Do not take ownership.
+    const uint8_t* _data = nullptr;
+    const uint8_t* _data_end = nullptr;
+
+private:
+    DISABLE_COPY_AND_ASSIGN(Parser);
+};
+
+Parser* Parser::create_ublox() {
+    return new UbloxParser();
+}
+```
+
+### 步骤 3
+
+在config.proto文件中, 为新的GPS接收器添加新的数据格式定义:
+
+在配置文件（modules/drivers/gnss/proto/config.proto）中添加`UBLOX_TEXT` and `UBLOX_BINARY` 
+
+```txt
+message Stream {
+    enum Format {
+        UNKNOWN = 0;
+        NMEA = 1;
+        RTCM_V2 = 2;
+        RTCM_V3 = 3;
+
+        NOVATEL_TEXT = 10;
+        NOVATEL_BINARY = 11;
+
+        UBLOX_TEXT = 20;
+        UBLOX_BINARY = 21;
+    }
+... ...
+```
+
+### 步骤 4
+
+在函数`create_parser`（见data_parser.cpp）, 为新GPS接收器添加新解析器实例.
+我们将通过添加处理`config::Stream::UBLOX_BINARY`的代码实现上面的步骤，具体如下。
+
+``` cpp
+Parser* create_parser(config::Stream::Format format, bool is_base_station = false) {
+    switch (format) {
+    case config::Stream::NOVATEL_BINARY:
+        return Parser::create_novatel();
+
+    case config::Stream::UBLOX_BINARY:
+        return Parser::create_ubloxl();
+
+    default:
+        return nullptr;
+    }
+}
+
+```
+
+# ===========================
+# 如何添加新的CAN卡
+
+## 简介
+控制器区域网络（CAN）是在许多微控制器和设备中密集使用的网络，用于在没有主计算机帮助的情况下在设备之间传输数据。
+
+Apollo中使用的默认CAN卡是 **ESD CAN-PCIe卡**。您可以使用以下步骤添加新的CAN卡：
+
+## 添加新CAN卡
+添加新的CAN卡需要完成以下几个步骤:
+
+1. 实现新CAN卡的`CanClient`类。
+2. 在`CanClientFactory`中注册新的CAN卡。
+3. 更新配置文件。
+
+以下步骤展示了如何添加新的CAN卡 - 示例添加CAN卡到您的工程。
+
+### 步骤 1
+
+实现新CAN卡的CanClient类
+下面的代码展示了如何实现 `CANClient` 类:
+
+```cpp
+#include <string>
+#include <vector>
+
+#include "hermes_can/include/bcan.h"
+#include "modules/canbus/can_client/can_client.h"
+#include "modules/canbus/common/canbus_consts.h"
+#include "modules/common/proto/error_code.pb.h"
+
+/**
+ * @namespace apollo::canbus::can
+ * @brief apollo::canbus::can
+ */
+namespace apollo {
+namespace canbus {
+namespace can {
+
+/**
+ * @class ExampleCanClient
+ * @brief The class which defines a Example CAN client which inherits CanClient.
+ */
+class ExampleCanClient : public CanClient {
+ public:
+  /**
+   * @brief Initialize the Example CAN client by specified CAN card parameters.
+   * @param parameter CAN card parameters to initialize the CAN client.
+   * @return If the initialization is successful.
+   */
+  bool Init(const CANCardParameter& parameter) override;
+
+  /**
+   * @brief Destructor
+   */
+  virtual ~ExampleCanClient() = default;
+
+  /**
+   * @brief Start the Example CAN client.
+   * @return The status of the start action which is defined by
+   *         apollo::common::ErrorCode.
+   */
+  apollo::common::ErrorCode Start() override;
+
+  /**
+   * @brief Stop the Example CAN client.
+   */
+  void Stop() override;
+
+  /**
+   * @brief Send messages
+   * @param frames The messages to send.
+   * @param frame_num The amount of messages to send.
+   * @return The status of the sending action which is defined by
+   *         apollo::common::ErrorCode.
+   */
+  apollo::common::ErrorCode Send(const std::vector<CanFrame>& frames,
+                                 int32_t* const frame_num) override;
+
+  /**
+   * @brief Receive messages
+   * @param frames The messages to receive.
+   * @param frame_num The amount of messages to receive.
+   * @return The status of the receiving action which is defined by
+   *         apollo::common::ErrorCode.
+   */
+  apollo::common::ErrorCode Receive(std::vector<CanFrame>* const frames,
+                                    int32_t* const frame_num) override;
+
+  /**
+   * @brief Get the error string.
+   * @param status The status to get the error string.
+   */
+  std::string GetErrorString(const int32_t status) override;
+
+ private:
+  ...
+  ...
+};
+
+}  // namespace can
+}  // namespace canbus
+}  // namespace apollo
+```
+
+### 步骤 2
+在CanClientFactory中注册新CAN卡，
+在 `CanClientFactory`中添加如下代码:
+```cpp
+void CanClientFactory::RegisterCanClients() {  
+  Register(CANCardParameter::ESD_CAN, 
+           []() -> CanClient* { return new can::EsdCanClient(); });  
+  
+  // register the new CAN card here.  
+  Register(CANCardParameter::EXAMPLE_CAN,  
+           []() -> CanClient* { return new can::ExampleCanClient(); });  
+}  
+```
+
+### 步骤 3
+
+接下来，需要更新配置文件
+在`/modules/canbus/proto/can_card_parameter.proto`添加 EXAMPLE_CAN 
+
+```proto
+message CANCardParameter {
+  enum CANCardBrand {
+    FAKE_CAN = 0;
+    ESD_CAN = 1;
+    EXAMPLE_CAN = 2; // add new CAN card here.
+  }
+  ... ... 
+}
+```
+Update `/modules/canbus/conf/canbus_conf.pb.txt`
+
+```txt
+... ... 
+can_card_parameter {
+  brand:EXAMPLE_CAN
+  type: PCI_CARD // suppose the new can card is PCI_CARD
+  channel_id: CHANNEL_ID_ZERO // suppose the new can card has CHANNEL_ID_ZERO
+}
+... ...
+```
+
+
+# =====================
+# 如何添加新的控制算法
+
+Apollo中的控制算法由一个或多个控制器组成，可以轻松更改或替换为不同的算法。 每个控制器将一个或多个控制命令输出到`CANbus`。 Apollo中的默认控制算法包含横向控制器（LatController）和纵向控制器（LonController）。 它们分别负责横向和纵向的车辆控制。
+
+新的控制算法不必遵循默认模式，例如，一个横向控制器+一个纵向控制器。 它可以是单个控制器，也可以是任意数量控制器的组合。
+
+添加新的控制算法的步骤：
+
+1. 创建一个控制器
+2. 在文件`control_config` 中添加新控制器的配置信息
+3. 注册新控制器
+
+为了更好的理解，下面对每个步骤进行详细的阐述:
+
+## 创建一个控制器
+
+所有控制器都必须继承基类`Controller`，它定义了一组接口。 以下是控制器实现的示例:
+
+```c++
+namespace apollo {
+namespace control {
+
+class NewController : public Controller {
+ public:
+  NewController();
+  virtual ~NewController();
+  Status Init(const ControlConf* control_conf) override;
+  Status ComputeControlCommand(
+      const localization::LocalizationEstimate* localization,
+      const canbus::Chassis* chassis, const planning::ADCTrajectory* trajectory,
+      ControlCommand* cmd) override;
+  Status Reset() override;
+  void Stop() override;
+  std::string Name() const override;
+};
+}  // namespace control
+}  // namespace apollo
+```
+
+
+
+## 在文件`control_config` 中添加新控制器的配置信息
+
+按照下面的步骤添加新控制器的配置信息:
+
+1. 根据算法要求为新控制器配置和参数定义`proto`。作为示例，可以参考以下位置的`LatController`的`proto`定义：`modules/control/proto/ lat_controller_conf.proto`
+2. 定义新的控制器`proto`之后，例如`new_controller_conf.proto`，输入以下内容:
+
+    ```protobuf
+    syntax = "proto2";
+
+    package apollo.control;
+
+    message NewControllerConf {
+        double parameter1 = 1;
+        int32 parameter2 = 2;
+    }
+    ```
+
+3. 参考如下内容更新 `modules/control/proto/control_conf.proto`文件:
+
+    ```protobuf
+    optional apollo.control.NewControllerConf new_controller_conf = 15;
+    ```
+
+4. 参考以内容更新 `ControllerType`（在`modules/control/proto/control_conf.proto` 中）:
+
+    ```protobuf
+    enum ControllerType {
+        LAT_CONTROLLER = 0;
+        LON_CONTROLLER = 1;
+        NEW_CONTROLLER = 2;
+      };
+    ```
+
+5. `protobuf`定义完成后，在`modules/control/conf/lincoln.pb.txt`中相应更新控制配置文件。
+
+```
+注意：上面的"control/conf"文件是Apollo的默认文件。您的项目可能使用不同的控制配置文件.
+```
+
+## 注册新控制器
+
+要激活Apollo系统中的新控制器，请在如下文件中的“ControllerAgent”中注册新控制器:
+
+> modules/control/controller/controller_agent.cc
+
+按照如下示例添加注册信息:
+
+```c++
+void ControllerAgent::RegisterControllers() {
+  controller_factory_.Register(
+      ControlConf::NEW_CONTROLLER,
+      []() -> Controller * { return new NewController(); });
+}
+```
+
+在完成以上步骤后，您的新控制器便可在Apollo系统中生效。
+
+# =====================
+# 如何在预测模块中添加新评估器
+
+## 简介
+评估器通过应用预训练的深度学习模型生成特征（来自障碍物和当前车辆的原始信息）以获得模型输出。
+
+## 添加评估器的步骤
+按照下面的步骤添加名称为`NewEvaluator`的评估器。
+1. 在proto中添加一个字段
+2. 声明一个从`Evaluator`类继承的类`NewEvaluator`
+3. 实现类`NewEvaluator`
+4. 更新预测配置
+5. 更新评估器管理
+
+### 声明一个从`Evaluator`类继承的类`NewEvaluator`
+ `modules/prediction/evaluator/vehicle`目录下新建文件`new_evaluator.h`。声明如下:
+```cpp
+#include "modules/prediction/evaluator/evaluator.h"
+
+namespace apollo {
+namespace prediction {
+
+class NewEvaluator : public Evaluator {
+ public:
+  NewEvaluator();
+  virtual ~NewEvaluator();
+  void Evaluate(Obstacle* obstacle_ptr) override;
+  // Other useful functions and fields.
+};
+
+}  // namespace prediction
+}  // namespace apollo
+```
+
+### 实现类 `NewEvaluator`
+在`new_evaluator.h`所在目录下新建文件`new_evaluator.cc`。实现如下:
+```cpp
+#include "modules/prediction/evaluator/vehicle/new_evaluator.h"
+
+namespace apollo {
+namespace prediction {
+
+NewEvaluator::NewEvaluator() {
+  // Implement
+}
+
+NewEvaluator::～NewEvaluator() {
+  // Implement
+}
+
+NewEvaluator::Evaluate(Obstacle* obstacle_ptr)() {
+  // Extract features
+  // Compute new_output by applying pre-trained model
+}
+
+// Other functions
+
+}  // namespace prediction
+}  // namespace apollo
+
+```
+
+### 在proto中添加新评估器
+在`prediction_conf.proto`中添加新评估器类型:
+```cpp
+  enum EvaluatorType {
+    MLP_EVALUATOR = 0;
+    NEW_EVALUATOR = 1;
+  }
+```
+
+### 更新prediction_conf文件
+在 `modules/prediction/conf/prediction_conf.pb.txt`中，按照如下方式更新字段`evaluator_type`:
+```
+obstacle_conf {
+  obstacle_type: VEHICLE
+  obstacle_status: ON_LANE
+  evaluator_type: NEW_EVALUATOR
+  predictor_type: NEW_PREDICTOR
+}
+```
+
+### 更新评估器管理
+按照如下方式更新`CreateEvluator( ... )` :
+```cpp
+  case ObstacleConf::NEW_EVALUATOR: {
+      evaluator_ptr.reset(new NewEvaluator());
+      break;
+    }
+```
+按照如下方式更新`RegisterEvaluators()` :
+```cpp
+  RegisterEvaluator(ObstacleConf::NEW_EVALUATOR);
+```
+
+完成上述步骤后，新评估器便创建成功了。
+
+## 添加新特性
+如果你想添加新特性，请按照如下的步骤进行操作:
+### 在proto中添加一个字段
+假设新的评估结果名称是`new_output`且类型是`int32`。如果输出直接与障碍物相关，可以将它添加到`modules/prediction/proto/feature.proto`中，如下所示:
+```cpp
+message Feature {
+    // Other existing features
+    optional int32 new_output = 1000;
+}
+```
+
+如果输出与车道相关，请将其添加到`modules/prediction/proto/lane_graph.proto`中，如下所示:
+```cpp
+message LaneSequence {
+    // Other existing features
+    optional int32 new_output = 1000;
+}
+```
+
+# =====================
+# 如何在预测模块中添加一个预测器
+
+## 简介
+
+预测器为每个障碍物生成预测轨迹。在这里，假设我们想给我们的车辆增加一个新的预测器，用于其他类型的障碍，步骤如下：
+
+1. 定义一个继承基类 `Predictor` 的类
+2. 实现新类 `NewPredictor`
+3. 在 `prediction_conf.proto`中添加一个新的预测期类型
+4. 更新 prediction_conf
+5. 更新预测器管理器（Predictor manager）
+
+## 添加新预测器的步骤
+
+如下步骤将会指导您在预测器中添加一个 `NewPredictor`。
+
+### 定义一个继承基类 `Predictor` 的类
+
+在文件夹 `modules/prediction/predictor/vehicle`中创建一个名为`new_predictor.h`的文件，文件内容如下：
+```cpp
+
+#include "modules/prediction/predictor/predictor.h"
+
+namespace apollo {
+namespace prediction {
+
+class NewPredictor : public Predictor {
+ public:
+  void Predict(Obstacle* obstacle) override;
+  // Other useful functions and fields.
+};
+
+}  // namespace prediction
+}  // namespace apollo
+```
+
+### Implement the class `NewPredictor`
+在创建了 `new_predictor.h`的文件夹中创建文件 `new_predictor.cc`。 文件内容如下:
+```cpp
+#include "modules/prediction/predictor/vehicle/new_predictor.h"
+
+namespace apollo {
+namespace prediction {
+
+NewPredictor::Predict(Obstacle* obstacle)() {
+  // Get the results from evaluator
+  // Generate the predicted trajectory
+}
+
+// Other functions
+
+}  // namespace prediction
+}  // namespace apollo
+
+```
+
+### 在 `prediction_conf.proto`中添加一个新的预测期类型
+```
+  enum PredictorType {
+    LANE_SEQUENCE_PREDICTOR = 0;
+    FREE_MOVE_PREDICTOR = 1;
+    REGIONAL_PREDICTOR = 2;
+    MOVE_SEQUENCE_PREDICTOR = 3;
+    NEW_PREDICTOR = 4;
+  }
+```
+
+### 更新 prediction_conf
+在 `modules/prediction/conf/prediction_conf.pb.txt`中, 更新 `predictor_type`部分如下:
+```
+obstacle_conf {
+  obstacle_type: VEHICLE
+  obstacle_status: ON_LANE
+  evaluator_type: NEW_EVALUATOR
+  predictor_type: NEW_PREDICTOR
+}
+```
+
+### 更新预测器管理器（Predictor manager）
+更新 `CreateEvluator( ... )` 如下:
+```cpp
+  case ObstacleConf::NEW_PREDICTOR: {
+      predictor_ptr.reset(new NewPredictor());
+      break;
+    }
+```
+更新 `RegisterPredictors()` 如下:
+```cpp
+  RegisterPredictor(ObstacleConf::NEW_PREDICTOR);
+```
+
+在完成以上步骤以后，一个新的预测器就创建好了。
+=======
+# 如何在预测模块中添加一个预测器
+
+## 简介
+
+预测器为每个障碍物生成预测轨迹。在这里，假设我们想给我们的车辆增加一个新的预测器，用于其他类型的障碍，步骤如下：
+
+1. 定义一个继承基类 `Predictor` 的类
+2. 实现新类 `NewPredictor`
+3. 在 `prediction_conf.proto`中添加一个新的预测期类型
+4. 更新 prediction_conf
+5. 更新预测器管理器（Predictor manager）
+
+## 添加新预测器的步骤
+
+如下步骤将会指导您在预测器中添加一个 `NewPredictor`。
+
+### 定义一个继承自基类 `Predictor` 的类
+
+在文件夹 `modules/prediction/predictor/vehicle`中创建一个名为`new_predictor.h`的文件，文件内容如下：
+```cpp
+
+#include "modules/prediction/predictor/predictor.h"
+
+namespace apollo {
+namespace prediction {
+
+class NewPredictor : public Predictor {
+ public:
+  void Predict(Obstacle* obstacle) override;
+  // Other useful functions and fields.
+};
+
+}  // namespace prediction
+}  // namespace apollo
+```
+
+### Implement the class `NewPredictor`
+在创建了 `new_predictor.h`的文件夹中创建文件 `new_predictor.cc`。文件内容如下:
+```cpp
+#include "modules/prediction/predictor/vehicle/new_predictor.h"
+
+namespace apollo {
+namespace prediction {
+
+NewPredictor::Predict(Obstacle* obstacle)() {
+  // Get the results from evaluator
+  // Generate the predicted trajectory
+}
+
+// Other functions
+
+}  // namespace prediction
+}  // namespace apollo
+
+```
+
+### 在 `prediction_conf.proto`中添加一个新的预测器类型
+```
+  enum PredictorType {
+    LANE_SEQUENCE_PREDICTOR = 0;
+    FREE_MOVE_PREDICTOR = 1;
+    REGIONAL_PREDICTOR = 2;
+    MOVE_SEQUENCE_PREDICTOR = 3;
+    NEW_PREDICTOR = 4;
+  }
+```
+
+### 更新 prediction_conf
+在 `modules/prediction/conf/prediction_conf.pb.txt`中，更新 `predictor_type`部分如下:
+```
+obstacle_conf {
+  obstacle_type: VEHICLE
+  obstacle_status: ON_LANE
+  evaluator_type: NEW_EVALUATOR
+  predictor_type: NEW_PREDICTOR
+}
+```
+
+### 更新预测器管理器（Predictor manager）
+更新 `CreateEvluator( ... )` 如下:
+```cpp
+  case ObstacleConf::NEW_PREDICTOR: {
+      predictor_ptr.reset(new NewPredictor());
+      break;
+    }
+```
+更新 `RegisterPredictors()` 如下:
+```cpp
+  RegisterPredictor(ObstacleConf::NEW_PREDICTOR);
+```
+
+完成以上步骤后，一个新的预测器就创建好了。
+
+
+# =================
+# 如何在Apollo中添加新的车辆
+
+## 简介
+本文描述了如何向Apollo中添加新的车辆。
+
+```
+注意: Apollo控制算法将林肯MKZ配置为默认车辆
+```
+
+添加新的车辆时，如果您的车辆需要不同于Apollo控制算法提供的属性，请参考：
+
+- 使用适合您的车辆的其它控制算法。
+- 修改现有算法的参数以获得更好的结果。
+
+## 增加新车辆 
+
+完成以下任务以添加新车辆： 
+
+* 实现新的车辆控制器。
+
+* 实现新的消息管理器。
+
+* 实施新的车辆工厂。
+
+* 更新配置文件。 
+
+### 实现新的车辆控制器
+新的车辆控制器是从 `VehicleController`类继承的。 下面提供了一个头文件示例。
+```cpp
+/**
+ * @class NewVehicleController
+ *
+ * @brief this class implements the vehicle controller for a new vehicle.
+ */
+class NewVehicleController final : public VehicleController {
+ public:
+  /**
+   * @brief initialize the new vehicle controller.
+   * @return init error_code
+   */
+  ::apollo::common::ErrorCode Init(
+      const VehicleParameter& params, CanSender* const can_sender,
+      MessageManager* const message_manager) override;
+
+  /**
+   * @brief start the new vehicle controller.
+   * @return true if successfully started.
+   */
+  bool Start() override;
+
+  /**
+   * @brief stop the new vehicle controller.
+   */
+  void Stop() override;
+
+  /**
+   * @brief calculate and return the chassis.
+   * @returns a copy of chassis. Use copy here to avoid multi-thread issues.
+   */
+  Chassis chassis() override;
+
+  // more functions implemented here
+  ...
+
+};
+```
+### 实现新的消息管理器
+新的消息管理器是从 `MessageManager` 类继承的。 下面提供了一个头文件示例。
+```cpp
+/**
+ * @class NewVehicleMessageManager
+ *
+ * @brief implementation of MessageManager for the new vehicle
+ */
+class NewVehicleMessageManager : public MessageManager {
+ public:
+  /**
+   * @brief construct a lincoln message manager. protocol data for send and
+   * receive are added in the construction.
+   */
+  NewVehicleMessageManager();
+  virtual ~NewVehicleMessageManager();
+
+  // define more functions here.
+  ...
+};
+```
+
+### 实施新的车辆工厂
+新的车辆工厂是从 `AbstractVehicleFactory` 类继承的。下面提供了一个头文件示例。
+```cpp
+/**
+ * @class NewVehicleFactory
+ *
+ * @brief this class is inherited from AbstractVehicleFactory. It can be used to
+ * create controller and message manager for lincoln vehicle.
+ */
+class NewVehicleFactory : public AbstractVehicleFactory {
+ public:
+  /**
+  * @brief destructor
+  */
+  virtual ~NewVehicleFactory() = default;
+
+  /**
+   * @brief create lincoln vehicle controller
+   * @returns a unique_ptr that points to the created controller
+   */
+  std::unique_ptr<VehicleController> CreateVehicleController() override;
+
+  /**
+   * @brief create lincoln message manager
+   * @returns a unique_ptr that points to the created message manager
+   */
+  std::unique_ptr<MessageManager> CreateMessageManager() override;
+};
+```
+一个.cc示例文件如下：
+```cpp
+std::unique_ptr<VehicleController>
+NewVehicleFactory::CreateVehicleController() {
+  return std::unique_ptr<VehicleController>(new lincoln::LincolnController());
+}
+
+std::unique_ptr<MessageManager> NewVehicleFactory::CreateMessageManager() {
+  return std::unique_ptr<MessageManager>(new lincoln::LincolnMessageManager());
+}
+```
+
+Apollo提供可以用于实现新的车辆协议的基类 `ProtocolData`。
+
+### 更新配置文件
+
+在`modules/canbus/vehicle/vehicle_factory.cc`里注册新的车辆。 下面提供了一个头文件示例。
+```cpp
+void VehicleFactory::RegisterVehicleFactory() {
+  Register(VehicleParameter::LINCOLN_MKZ, []() -> AbstractVehicleFactory* {
+    return new LincolnVehicleFactory();
+  });
+
+  // register the new vehicle here.
+  Register(VehicleParameter::NEW_VEHICLE_BRAND, []() -> AbstractVehicleFactory* {
+    return new NewVehicleFactory();
+  });
+}
+```
+### 更新配置文件
+在 `modules/canbus/conf/canbus_conf.pb.txt` 中更新配置，在Apollo系统中激活车辆。
+```config
+vehicle_parameter {
+  brand: NEW_VEHICLE_BRAND
+  // put other parameters below
+  ...
+}
+```
+=======
+# 如何在Apollo中添加新的车辆
+
+## 简介
+本文阐述了如何向Apollo中添加新的车辆。
+
+```
+注意: Apollo控制算法将林肯MKZ配置为默认车辆。
+```
+
+添加新的车辆时，如果您的车辆需要不同于Apollo控制算法提供的属性，请参考：
+
+- 使用适合您的车辆的其它控制算法。
+- 修改现有算法的参数以获得更好的结果。
+
+## 增加新车辆 
+
+按照以下步骤以实现新车辆的添加： 
+
+* 实现新的车辆控制器
+
+* 实现新的消息管理器
+
+* 实现新的车辆工厂
+
+* 注册新的车辆
+
+* 更新配置文件
+
+### 实现新的车辆控制器
+新的车辆控制器是从 `VehicleController`类继承的。 下面提供了一个头文件示例。
+```cpp
+/**
+ * @class NewVehicleController
+ *
+ * @brief this class implements the vehicle controller for a new vehicle.
+ */
+class NewVehicleController final : public VehicleController {
+ public:
+  /**
+   * @brief initialize the new vehicle controller.
+   * @return init error_code
+   */
+  ::apollo::common::ErrorCode Init(
+      const VehicleParameter& params, CanSender* const can_sender,
+      MessageManager* const message_manager) override;
+
+  /**
+   * @brief start the new vehicle controller.
+   * @return true if successfully started.
+   */
+  bool Start() override;
+
+  /**
+   * @brief stop the new vehicle controller.
+   */
+  void Stop() override;
+
+  /**
+   * @brief calculate and return the chassis.
+   * @returns a copy of chassis. Use copy here to avoid multi-thread issues.
+   */
+  Chassis chassis() override;
+
+  // more functions implemented here
+  ...
+
+};
+```
+### 实现新的消息管理器
+新的消息管理器是从 `MessageManager` 类继承的。 下面提供了一个头文件示例。
+```cpp
+/**
+ * @class NewVehicleMessageManager
+ *
+ * @brief implementation of MessageManager for the new vehicle
+ */
+class NewVehicleMessageManager : public MessageManager {
+ public:
+  /**
+   * @brief construct a lincoln message manager. protocol data for send and
+   * receive are added in the construction.
+   */
+  NewVehicleMessageManager();
+  virtual ~NewVehicleMessageManager();
+
+  // define more functions here.
+  ...
+};
+```
+
+### 实施新的车辆工厂
+新的车辆工厂是从 `AbstractVehicleFactory` 类继承的。下面提供了一个头文件示例。
+```cpp
+/**
+ * @class NewVehicleFactory
+ *
+ * @brief this class is inherited from AbstractVehicleFactory. It can be used to
+ * create controller and message manager for lincoln vehicle.
+ */
+class NewVehicleFactory : public AbstractVehicleFactory {
+ public:
+  /**
+  * @brief destructor
+  */
+  virtual ~NewVehicleFactory() = default;
+
+  /**
+   * @brief create lincoln vehicle controller
+   * @returns a unique_ptr that points to the created controller
+   */
+  std::unique_ptr<VehicleController> CreateVehicleController() override;
+
+  /**
+   * @brief create lincoln message manager
+   * @returns a unique_ptr that points to the created message manager
+   */
+  std::unique_ptr<MessageManager> CreateMessageManager() override;
+};
+```
+一个.cc示例文件如下：
+```cpp
+std::unique_ptr<VehicleController>
+NewVehicleFactory::CreateVehicleController() {
+  return std::unique_ptr<VehicleController>(new lincoln::LincolnController());
+}
+
+std::unique_ptr<MessageManager> NewVehicleFactory::CreateMessageManager() {
+  return std::unique_ptr<MessageManager>(new lincoln::LincolnMessageManager());
+}
+```
+
+Apollo提供可以用于实现新车辆协议的基类 `ProtocolData`。
+
+### 注册新的车辆
+
+在`modules/canbus/vehicle/vehicle_factory.cc`里注册新车辆。 下面提供了一个头文件示例。
+```cpp
+void VehicleFactory::RegisterVehicleFactory() {
+  Register(VehicleParameter::LINCOLN_MKZ, []() -> AbstractVehicleFactory* {
+    return new LincolnVehicleFactory();
+  });
+
+  // register the new vehicle here.
+  Register(VehicleParameter::NEW_VEHICLE_BRAND, []() -> AbstractVehicleFactory* {
+    return new NewVehicleFactory();
+  });
+}
+```
+### 更新配置文件
+在 `modules/canbus/conf/canbus_conf.pb.txt` 中更新配置，在Apollo系统中激活车辆。
+```config
+vehicle_parameter {
+  brand: NEW_VEHICLE_BRAND
+  // put other parameters below
+  ...
+}
+```
+
+# ====================
+[使用VSCode构建、调试Apollo项目](https://github.com/ApolloAuto/apollo/blob/master/docs/howto/how_to_build_and_debug_apollo_in_vscode_cn.md)
+
+
+# =====================
+## 如何调试Dreamview启动问题
+
+### Dreamview的启动步骤
+
+如果在`docker / scripts / dev`序列中启动Dreamview时遇到问题，请首先检查是否使用了如下所示的正确命令。
+
+```bash
+$ bash docker/scripts/dev_start.sh
+$ bash docker/scripts/dev_into.sh
+$ cd /apollo
+$ bash apollo.sh build
+$ bash scripts/dreamview.sh
+```
+### Dreamview启动失败
+
+如果Dreamview无法启动，请使用下面的脚本检查Dreamview的启动日志并重新启动Dreamview。
+
+```bash
+# Start Dreamview in foreground to see any error message it prints out during startup
+$ bash scripts/dreamview.sh start_fe
+
+# check dreamview startup log
+$ cat data/log/dreamview.out
+terminate called after throwing an instance of 'CivetException'
+  what():  null context when constructing CivetServer. Possible problem binding to port.
+
+$ sudo apt-get install psmisc
+
+# to check if dreamview is running from other terminal
+$ sudo lsof -i :8888
+
+# kill other running/pending dreamview
+$ sudo fuser -k 8888/tcp
+
+# restart dreamview again
+$ bash scripts/dreamview.sh
+```
+
+### 用gdb调试
+
+如果dreamview的启动日志中没有任何有效内容，您可以尝试使用gdb调试dreamview，请使用以下命令：
+
+```
+$ gdb --args /apollo/bazel-bin/modules/dreamview/dreamview --flagfile=/apollo/modules/dreamview/conf/dreamview.conf
+# or
+$ source scripts/apollo_base.sh;
+$ start_gdb dreamview
+```
+
+一旦gdb启动，按下`r`和`enter`键运行，如果dreamview崩溃，然后用`bt`获得回溯。
+
+如果您在gdb backtrace中看到错误“非法指令”以及与 **libpcl_sample_consensus.so.1.7** 相关的内容，那么您可能需要自己从源代码重建pcl lib并替换docker中的那个。
+
+这通常发生在您尝试在CPU不支持FMA/FMA3指令的机器上运行Apollo/dreamview时，它会失败，因为docker image附带的预构建的pcl lib是使用FMA/ FMA3支持编译的。
+
+# ==================
+# 如何在本地运行多传感器融合定位模块
+
+本文档提供了如何在本地运行多传感器融合定位模块的方法。
+
+## 1. 事先准备
+ - 从[GitHub网站](https://github.com/ApolloAuto/apollo)下载Apollo源代码
+ - 按照[教程](https://github.com/ApolloAuto/apollo/blob/master/README_cn.md)设置Docker环境并搭建Apollo工程
+ - 从[Apllo数据平台](http://data.apollo.auto/?name=sensor%20data&data_key=multisensor&data_type=1&locale=en-us&lang=en)下载多传感器融合定位数据（仅限美国地区）
+
+## 2. 配置定位模块
+为了使定位模块正确运行，需要对地图路径和传感器外参进行配置。假设下载的定位数据的所在路径为DATA_PATH。
+
+在进行以下步骤前，首先确定你在docker容器中。
+
+### 2.1 配置传感器外参
+将定位数据中的传感器外参拷贝至指定文件夹下。
+
+```
+  cp DATA_PATH/params/ant_imu_leverarm.yaml /apollo/modules/localization/msf/params/gnss_params/
+  cp DATA_PATH/params/velodyne64_novatel_extrinsics_example.yaml /apollo/modules/localization/msf/params/velodyne_params/
+  cp DATA_PATH/params/velodyne64_height.yaml /apollo/modules/localization/msf/params/velodyne_params/
+```
+各个外参的意义
+ - ant_imu_leverarm.yaml： 杆臂值参数，GNSS天线相对Imu的距离
+ - velodyne64_novatel_extrinsics_example.yaml： Lidar相对Imu的外参
+ - velodyne64_height.yaml： Lidar相对地面的高度
+
+### 2.2 配置地图路径
+在/apollo/modules/localization/conf/localization.conf中添加关于地图路径的配置
+
+```
+# Redefine the map_dir in global_flagfile.txt
+--map_dir=DATA_PATH
+```
+这将会覆盖global_flagfile.txt中的默认值。
+
+## 3. 运行多传感器融合定位模块
+```
+./scripts/localization.sh
+```
+定位程序将在后台运行，可以通过以下命令进行查看。
+```
+ps -e | grep localization
+```
+在/apollo/data/log目录下，可以看到定位模块输出的相关文件。 
+
+ - localization.INFO : INFO级别的log信息
+ - localization.WARNING : WARNING级别的log信息
+ - localization.ERROR : ERROR级别的log信息
+ - localization.out : 标准输出重定向文件
+ - localizaiton.flags : 启动localization模块使用的配置
+
+## 4. 播放演示rosbag
+```
+cd DATA_PATH/bag
+rosbag play *.bag
+```
+从播放数据到定位模块开始输出定位消息，大约需要30s左右。
+
+## 5. 记录与可视化定位结果（可选）
+### 记录定位结果
+```
+./scripts/record_bag.sh
+```
+该脚本会在后台运行录包程序，并将存放路径输出到终端上。
+
+### 可视化定位结果
+
+运行可视化工具
+
+```
+./scripts/localization_online_visualizer.sh
+```
+该可视化工具首先根据定位地图生成用于可视化的缓存文件，存放在/apollo/data/map_visual目录下。
+
+然后接收以下topic并进行可视化绘制。
+
+ - /apollo/sensor/velodyne64/compensator/PointCloud2
+ - /apollo/localization/msf_lidar
+ - /apollo/localization/msf_gnss
+ - /apollo/localization/pose
+
+可视化效果如下
+![1](https://github.com/ApolloAuto/apollo/tree/master/docs/howto/images/msf_localization/online_visualizer.png)
+
+如果发现可视化工具运行时卡顿，可使用如下命令重新编译可视化工具
+
+```
+cd /apollo
+bazel build -c opt //modules/localization/msf/local_tool/local_visualization/online_visual:online_local_visualizer
+```
+
+编译选项-c opt优化程序性能，从而使可视化工具可以实时运行。
+
+## 6. 结束运行定位模块
+
+```
+./scripts/localization.sh stop
+```
+
+如果之前有运行步骤5的录包脚本，还需执行
+
+```
+./scripts/record_bag.sh stop
+```
+
+## 7. 验证定位结果（可选）
+
+假设步骤5中录取的数据存放路径为OUTPUT_PATH，杆臂值外参的路径为ANT_IMU_PATH
+
+运行脚本
+```
+./scripts/msf_local_evaluation.sh OUTPUT_PATH ANT_IMU_PATH
+```
+该脚本会以RTK定位模式为基准，将多传感器融合模式的定位结果进行对比。
+
+(注意只有在GNSS信号良好，RTK定位模式运行良好的区域，这样的对比才是有意义的。)
+
+获得如下统计结果：
+
+![2](https://github.com/ApolloAuto/apollo/tree/master/docs/howto/images/msf_localization/localization_result.png)
+
+可以看到两组统计结果，第一组是组合导航(输出频率200hz)的统计结果，第二组是点云定位(输出频率5hz)的统计结果，第三组是GNSS定位(输出频率约1hz)的统计结果。
+
+表格中各项的意义， 
+ - error：  平面误差，单位为米
+ - error lon：  车前进方向的误差，单位为米
+ - error lat：  车横向方向的误差，单位为米
+ - error roll： 翻滚角误差，单位为度
+ - error pit：  俯仰角误差，单位为度
+ - error yaw：  偏航角误差，单位为度
+ - mean： 误差的平均值
+ - std：  误差的标准差
+ - max：  误差的最大值
+ - <30cm：  距离误差少于30cm的帧所占的百分比
+ - <1.0d：  角度误差小于1.0d的帧所占的百分比
+ - con_frame()： 满足括号内条件的最大连续帧数
+ 
+ 
+ # ===========================
+ # 如何调节控制参数
+
+## 引言
+控制模块的目标是基于计划轨迹和当前车辆状态生成控制命令给车辆。
+
+## 背景
+
+### 输入/输出
+
+#### 输入
+* 规划轨迹
+* 当前的车辆状态
+* HMI驱动模式更改请求
+* 监控系统
+
+#### 输出
+输出控制命令管理`canbus`中的转向、节流和制动等功能。
+
+### 控制器介绍
+控制器包括管理转向指令的横向控制器和管理节气门和制动器命令的纵向控制器。
+
+#### 横向控制器
+横向控制器是基于LQR的最优控制器。 该控制器的动力学模型是一个简单的带有侧滑的自行车模型。它被分为两类，包括闭环和开环。
+
+- 闭环提供具有4种状态的离散反馈LQR控制器： 
+  - 横向误差
+  - 横向误差率
+  - 航向误差
+  - 航向误差率
+- 开环利用路径曲率信息消除恒定稳态航向误差。
+
+
+#### 纵向控制器
+纵向控制器配置为级联PID +校准表。它被分为两类，包括闭环和开环。
+
+- 闭环是一个级联PID（站PID +速度PID），它将以下数据作为控制器输入：
+  - 站误差
+  - 速度误差
+- 开环提供了一个校准表，将加速度映射到节气门/制动百分比。
+
+
+## 控制器调谐
+
+### 实用工具
+类似于[诊断](https://github.com/ApolloAuto/apollo/tree/master/modules/tools/diagnostics) 和 [realtime_plot](https://github.com/ApolloAuto/apollo/tree/master/modules/tools/realtime_plot) 可用于控制器调优，并且可以在`apollo/modules/tools/`中找到.
+### 横向控制器的整定
+横向控制器设计用于最小调谐力。“所有”车辆的基础横向控制器调谐步骤如下：
+
+1. 将`matrix_q` 中所有元素设置为零.
+
+2. 增加`matrix_q`中的第三个元素，它定义了航向误差加权，以最小化航向误差。
+
+3. 增加`matrix_q`的第一个元素，它定义横向误差加权以最小化横向误差。
+
+#### 林肯MKZ调谐
+
+对于Lincoln MKZ，有四个元素指的是状态加权矩阵Q的对角线元素：
+
+- 横向误差加权
+- 横向误差率加权
+- 航向误差加权
+- 航向差错率加权
+
+通过在横向控制器调谐中列出的基本横向控制器调整步骤来调整加权参数。下面是一个例子。
+
+```
+lat_controller_conf {
+  matrix_q: 0.05
+  matrix_q: 0.0
+  matrix_q: 1.0
+  matrix_q: 0.0
+}
+```
+
+#### 调谐附加车辆类型
+
+当调整除林肯MKZ以外的车辆类型时，首先更新车辆相关的物理参数，如下面的示例所示。然后，按照上面列出的基本横向控制器调整步骤*横向控制器调谐*和定义矩阵Q参数。
+
+下面是一个例子.
+```
+lat_controller_conf {
+  cf: 155494.663
+  cr: 155494.663
+  wheelbase: 2.85
+  mass_fl: 520
+  mass_fr: 520
+  mass_rl: 520
+  mass_rr: 520
+  eps: 0.01
+  steer_transmission_ratio: 16
+  steer_single_direction_max_degree: 470
+}
+```
+
+### 纵控制器的调谐
+纵向控制器由级联的PID控制器组成，该控制器包括一个站控制器和一个具有不同速度增益的高速/低速控制器。Apollo管理开环和闭环的调谐通过：
+
+- 开环: 校准表生成。请参阅[how_to_update_vehicle_calibration.md](https://github.com/ApolloAuto/apollo/blob/master/docs/howto/how_to_update_vehicle_calibration.md)的详细步骤
+- 闭环: 基于高速控制器->低速控制器->站控制器的顺序。
+
+#### 高/低速控制器的调谐
+
+高速控制器代码主要用于跟踪高于某一速度值的期望速度。例如：
+
+```
+high_speed_pid_conf {
+  integrator_enable: true
+  integrator_saturation_level: 0.3
+  kp: 1.0
+  ki: 0.3
+  kd: 0.0
+}
+```
+1.  首先将`kp`, `ki`, 和 `kd` 的值设为0.
+2.  然后开始增加`kp`的值，以减小阶跃响应对速度变化的上升时间。
+3.  最后，增加`ki`以降低速度控制器稳态误差。
+
+一旦获得较高速度的相对准确的速度跟踪性能，就可以开始从起点开始调整低速PID控制器以获得一个舒适的加速率。
+
+ ```
+ low_speed_pid_conf {
+   integrator_enable: true
+   integrator_saturation_level: 0.3
+   kp: 0.5
+   ki: 0.3
+   kd: 0.0
+ }
+ ```
+*注意:*  当设备切换到 *Drive*时，Apollo 通常将速度设置为滑行速度。
+
+#### 站控制器调谐
+
+Apollo 使用车辆的站控制器来跟踪车辆轨迹基准与车辆位置之间的站误差。  一个站控制器调谐示例如下所示。
+```
+station_pid_conf {
+  integrator_enable: true
+  integrator_saturation_level: 0.3
+  kp: 0.3
+  ki: 0.0
+  kd: 0.0
+}
+```
+## 参考文献
+1. "Vehicle dynamics and control." Rajamani, Rajesh. Springer Science & Business Media, 2011.
+
+2. "Optimal Trajectory generation for dynamic street scenarios in a Frenet
+   Frame", M. Werling et., ICRA2010
+
+# =====================
+# 如何标定车辆油门和制动
+
+## 介绍
+
+车辆校准的目的是找到准确产生从控制模块请求的加速量的油门和制动命令
+## 准备
+
+按如下顺序完成准备工作:
+- 访问相关代码
+- 改变驾驶模式
+- 选择测试地点
+
+### 访问相关代码
+* Canbus, 包括以下模块:
+  * GPS 驱动
+  * 定位
+
+### 改变驾驶模式
+  在`modules/canbus/conf/canbus_conf.pb.txt`中，设置驾驶模式为 `AUTO_SPEED_ONLY`.
+
+### 选择测试地点
+  理想的测试地点是平坦的长直路
+
+## 更新车辆标定
+
+以上准备工作完成后, 在`modules/tools/calibration`中按顺序完成如下工作
+
+- 采集数据
+- 处理数据
+- 绘制结果
+- 转换结果为`protobuf`格式
+
+### 采集数据
+1. 运行 `python data_collector.py`,参数如 x y z, x 代表了加速的控制指令, y 代表了限制速度(mps), z 是减速指令,正值标识油门量，负值标识刹车量.且每条命令运行多次，其中 `data_collector.py`在modules/tools/calibration/
+2. 根据车辆反应情况，调整命令脚本
+3. 运行 `python plot_data.py ` 使采集到的数据可视化
+
+比如输出指令 `15 5.2 -10`,将会生成名为`t15b-10r0.csv`的文件。
+
+### 处理数据
+对每个记录的日志分别运行`process_data.sh {dir}`，其中dir为`t15b-10r0.csv`所在的目录。每个数据日志被处理成`t15b-10r0.csv.result`。
+
+### 绘制结果
+通过运行`python plot_results.py t15b-10r0.csv`得到可视化最终结果，检查是否有异常
+
+### 转换结果为`protobuf`格式
+如果一切正常，运行`result2pb.sh`，把校准结果result.csv转换成控制模块定义的`protobuf`格式
+
+
+# ====================
+# 运行线下演示
+
+如果你没有车辆及车载硬件， Apollo还提供了一个计算机模拟环境，可用于演示和代码调试。 
+
+线下演示需要设置docker的release环境，请参照 [how_to_build_and_release](https://github.com/ApolloAuto/apollo/blob/master/docs/howto/how_to_build_and_release.md)文档中的[Install docker](https://github.com/ApolloAuto/apollo/blob/master/docs/howto/how_to_build_and_release.md#docker)章节。
+
+Apollo演示的安装步骤：
+
+1. 运行如下命令启动docker的release环境:
+
+    ```
+    bash docker/scripts/release_start.sh
+    ```
+
+2. 运行如下命令进入docker的release环境:
+
+    ```
+    bash docker/scripts/release_into.sh
+    ```
+
+3. 运行如下命令回放位rosbag:
+
+    ```
+    python docs/demo_guide/rosbag_helper.py demo_1.5.bag # 下载rosbag
+    rosbag play demo_1.5.bag --loop
+    ```
+
+    选项 `--loop` 用于设置循环回放模式.
+
+4. 打开Chrome浏览器，在地址栏输入**localhost:8888**即可访问Apollo Dreamview，如下图所示：
+    ![](https://github.com/ApolloAuto/apollo/tree/master/docs/demo_guide/images/dv_trajectory.png)
+   现在你能看到有一辆汽车在模拟器里移动!
+
+恭喜你完成了Apollo的演示步骤！
