@@ -1830,7 +1830,7 @@ http://localhost:8888
 
 如下图所示，在模式框中选择“Navigation”。
 
-![img](images/navigation_mode_tutorial/navigation_mode_1_init.png) 
+![img](https://github.com/ApolloAuto/apollo/blob/master/docs/technical_tutorial/images/navigation_mode_tutorial/navigation_mode_1_init.png) 
 
 然后在Docker内的apollo根目录下运行如下命令进行bag播放
 
@@ -1841,13 +1841,13 @@ in_dev_docker:/apollo/data$rosbag play demo_2.5.bag
 
 播放开始后，可以看到Dreamview界面如下
 
-![img](images/navigation_mode_tutorial/navigation_mode_2_play.png)
+![img](https://github.com/ApolloAuto/apollo/blob/master/docs/technical_tutorial/images/navigation_mode_tutorial/navigation_mode_2_play.png)
 
 ## 请求云端指引线
 
 在地图中选择一个目的地（沿canada路），点击地图视图中的红色Route按钮，云端指引者会接收到这个请求，并返回指引线，该指引线会被显示在地图视图中。如下图所示。
 
-![img](images/navigation_mode_tutorial/navigation_mode_3_cloud.png)
+![img](https://github.com/ApolloAuto/apollo/blob/master/docs/technical_tutorial/images/navigation_mode_tutorial/navigation_mode_3_cloud.png)
 
 以上就是云端指引者的调用过程。
 
@@ -1900,7 +1900,7 @@ in_dev_docker:/apollo/modules/tools/navigator$python navigator.py path_demo_2.5.
 
 发送完成后，Dreamview的地图视图中的红色指引线会更新为如下图所示：
 
-![img](images/navigation_mode_tutorial/navigation_mode_4_offline.png)
+![img](https://github.com/ApolloAuto/apollo/blob/master/docs/technical_tutorial/images/navigation_mode_tutorial/navigation_mode_4_offline.png)
 
 ## 5. 规划模块的调试
 
@@ -1935,11 +1935,11 @@ in_dev_docker:/apollo/data$rosbag play demo_2.5_no_planning.bag
 
 在Dreamview中我们会看到车辆的规划轨迹没有输出，如下图
 
-![img](images/navigation_mode_tutorial/navigation_mode_5_no_planning.png)
+![img](https://github.com/ApolloAuto/apollo/blob/master/docs/technical_tutorial/images/navigation_mode_tutorial/navigation_mode_5_no_planning.png)
 
 我们在Dreamview中打开Navi Planning模块，如下图
 
-![img](images/navigation_mode_tutorial/navigation_mode_6_live_planning.png)
+![img](https://github.com/ApolloAuto/apollo/blob/master/docs/technical_tutorial/images/navigation_mode_tutorial/navigation_mode_6_live_planning.png)
 
 我们看到实时计算的车辆的规划轨迹显示在Dreamview中。这时你可以试着更改一些规划模块的配置
 
@@ -1961,5 +1961,468 @@ in_dev_docker:/apollo/modules/planning/conf$planning_config_navi.pb.txt
 你也可以试着利用demo bag对其他一些模块进行调试。
 
 
+# =========================
+# 多激光雷达全球导航卫星系统(Multiple-LiDAR GNSS)校准指南
+
+欢迎使用多激光雷达全球导航卫星系统校准工具。本指南将向您展示如何成功校准多个LiDAR的步骤。
+
+## 内容
+
+-	概述
+-	准备
+-	使用校准工具
+-	结果与验证
+
+## 概述
+
+在许多自动驾驶任务，如HDMap的制作，多个激光雷达扫描结果需要注册在一个统一的坐标系统。在这种情况下，需要对多个LIDARs的外部参数进行仔细校准。为了解决这个问题，开发了多激光雷达GNSS校准工具。
+
+## 准备
+
+下载校准工具，并将文件提取到$APOLLO_HOME/modules /calibration。$APOLLO_HOME是APOLLO repository的根目录。
+根据Apollo 1.5提供的校准指南选择校准位置。
+确保GNSS处于良好状态。为了验证这一点，使用‘rostopic echo /apollo/sensor/gnss/best_pose’并检查关键词latitude_std_dev, longitude_std_dev 和height_std_dev后的数量，偏差越小，校准质量越好。 我们强烈建议在偏差小于0.02时校准传感器。
+## 使用校准工具
+
+### 记录校准数据
+
+当LIDARS和GNSS准备就绪时，使用/apollo/modules/calibration/multi_lidar_gnss/record.sh记录校准数据。请注意，此脚本仅用于记录velodyne HDL64 和VLP16。为了其他目的，需要修改这个脚本，或者只需要使用rosbag record来做同样的事情。通常，2分钟的数据长度就足够了。在数据捕获之后，运行/apollo/modules/calibration/multi_lidar_gnss/calibrate.sh校准传感器。脚本由以下两个步骤组成。
+
+### 出口数据
+
+一旦校准包被记录，使用/apollo/modules/calibration/exporter/export_msgs --config /apollo/modules/calibration/exporter/conf/export_config.yaml获得传感器数据。exporter的唯一输入是一个YAML配置文件，如下所示。
+```bash
+bag_path: "/apollo/data/bag/calibration/" # The path where the calibration bag is placed.
+dump_dir: "/apollo/data/bag/calibration/export/" # The path where the sensor data will be placed using exporter
+topics:
+    - /apollo/sensor/gnss/odometry: # Odometry topic name
+        type: ApolloOdometry        # Odometry type
+    - /apollo/sensor/velodyne16/PointCloud2: # vlp16 topic name
+        type: PointCloud2                    # vlp16 type
+    - /apollo/sensor/velodyne64/PointCloud2: # hdl64 topic name
+        type: PointCloud2                    # hdl64 type
+```
+
+如果将新topic按如下的规则添加到文件中，也可以导出PointCloud2 types的其他topic。
+```bash
+    - TOPIC_NAME: # topic name
+        type: PointCloud2
+```
+
+到目前为止，我们只支持ApolloOdometry和PointCloud2。
+
+### 运行校准工具
+
+如果输出所有传感器数据，运行/apollo/modules/calibration/lidar_gnss_calibrator/multi_lidar_gnss_calibrator --config /apollo/modules/calibration/lidar_gnss_calibrator/conf/multi_lidar_gnss_calibrator_config.yaml将得到结果。该工具的输入是一个YAML配置文件，如下所示。
+```bash
+# multi-LiDAR-GNSS calibration configurations
+data:
+    odometry: "/apollo/data/bag/calibration/export/multi_lidar_gnss/_apollo_sensor_gnss_odometry/odometry"
+    lidars: 
+        - velodyne16: 
+            path: "/apollo/data/bag/calibration/export/multi_lidar_gnss/_apollo_sensor_velodyne16_PointCloud2/"
+        - velodyne64: 
+            path: "/apollo/data/bag/calibration/export/multi_lidar_gnss/_apollo_sensor_velodyne64_PointCloud2/"
+    result: "/apollo/data/bag/calibration/export/multi_lidar_gnss/result/"
+calibration:
+    init_extrinsics:
+        velodyne16:
+            translation:    
+                x: 0.0
+                y: 1.77 
+                z: 1.1
+            rotation:
+                x: 0.183014 
+                y: -0.183014 
+                z: 0.683008 
+                w: 0.683008
+        velodyne64:
+            translation:    
+                x: 0.0
+                y: 1.57
+                z: 1.3
+            rotation:
+                x: 0.0
+                y: 0.0
+                z: 0.707
+                w: 0.707
+    steps: 
+        - source_lidars: ["velodyne64"]
+          target_lidars: ["velodyne64"]
+          lidar_type: "multiple"
+          fix_target_lidars: false
+          fix_z: true
+          iteration: 3
+        - source_lidars: ["velodyne16"]
+          target_lidars: ["velodyne16"]
+          lidar_type: "multiple"
+          fix_target_lidars: false
+          fix_z: true
+          iteration: 3
+        - source_lidars: ["velodyne16"]
+          target_lidars: ["velodyne64"]
+          lidar_type: "multiple"
+          fix_target_lidars: true
+          fix_z: false
+          iteration: 3
+```
+
+数据部分告诉工具在哪里获取点云和测距文件，以及在哪里保存结果。注意，LIDAR节点中的关键字将被识别为LiDARs的Frame ID。
+
+校准部分提供了外部信息的初始猜测。所有的外部信息都是从激光雷达到GNSS，这意味着这种变换将激光雷达坐标系中定义的点的坐标映射到GNSS坐标系中定义的这一点的坐标。初始猜测要求旋转角度误差小于5度，平移误差小于0.1米。
+
+步骤部分详细说明了校准过程。每个步骤被如下定义并且它们的含义在注释中。
+```bash
+- source_lidars: ["velodyne16"] # Source LiDAR in point cloud registration.
+  target_lidars: ["velodyne64"] # Target LiDAR in point cloud registration.
+  lidar_type: "multiple" # "multiple" for multi-beam LiDAR, otherwise "single"
+  fix_target_lidars: true # Whether to fix  extrinsics of target LiDARS. Only "true" when align different LiDARs.
+  fix_z: false # Whether to fix the z component of translation. Only "false" when align different LiDARs.
+  iteration: 3 # Iteration number
+```
+## 结果和验证
+校准工具将结果保存到结果路径中。
+```bash
+.
+└── calib_result
+    ├── velodyne16_novatel_extrinsics.yaml
+    ├── velodyne16_result.pcd
+    ├── velodyne16_result_rgb.pcd
+    ├── velodyne64_novatel_extrinsics.yaml
+    ├── velodyne64_result.pcd
+    └── velodyne64_result_rgb.pcd
+```
+这两个YAML文件是外部的。为了验证结果，使用pcl_viewer *_result.pcd检查注册质量。如果传感器校准好了，大量的细节可以从点云中识别出来。欲了解更多详情，请参阅校准指南Apollo 1.5。
+
+
+
+# ======================
+# Apollo 2.0 传感器标定方法使用指南
+
+欢迎使用Apollo传感器标定服务。本文档提供在Apollo 2.0中新增的3项传感器标定程序的使用流程说明，分别为：相机到相机的标定，相机到多线激光雷达的标定，以及毫米波雷达到相机的标定。
+
+## 文档概览
+
+* 概述
+* 准备工作
+* 标定流程
+* 标定结果获取
+* 标定结果验证
+
+## 概述
+
+在Apollo 2.0中，我们新增了3项标定功能：相机到相机的标定，相机到多线激光雷达的标定，以及毫米波雷达到相机的标定。对于多线激光雷达到组合惯导的标定，请参考多线激光雷达-组合惯导标定说明。Velodyne HDL64用户还可以使用Apollo 1.5提供的标定服务平台。标定工具均以车载可执行程序的方式提供。用户仅需要启动相应的标定程序，即可实时完成标定工作并进行结果验证。标定结果以 `.yaml` 文件形式返回。
+
+## 准备工作
+
+1. 下载[标定工具](https://github.com/ApolloAuto/apollo/releases/download/v2.0.0/calibration.tar.gz)，并解压缩到`$APOLLO_HOME/modules/calibration`目录下。（APOLLO_HOME是apollo代码的根目录）
+
+2. 相机内参文件
+
+	内参包含相机的焦距、主点和畸变系数等信息，可以通过一些成熟的相机标定工具来获得，例如 [ROS Camera Calibration Tools](http://wiki.ros.org/camera_calibration/Tutorials/MonocularCalibration) 和 [Camera Calibration Toolbox for Matlab](http://www.vision.caltech.edu/bouguetj/calib_doc/)。内参标定完成后，需将结果转换为 `.yaml` 格式的文件。下面是一个正确的内参文件样例：
+
+	```bash
+	header: 
+	  seq: 0
+	  stamp: 
+	    secs: 0
+	    nsecs: 0
+	  frame_id: short_camera
+	height: 1080
+	width: 1920
+	distortion_model: plumb_bob
+	D: [-0.535253, 0.259291, 0.004276, -0.000503, 0.0]
+	K: [1959.678185, 0.0, 1003.592207, 0.0, 1953.786100, 507.820634, 0.0, 0.0, 1.0]
+	R: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
+	P: [1665.387817, 0.0, 1018.703332, 0.0, 0.0, 1867.912842, 506.628623, 0.0, 0.0, 0.0, 1.0, 0.0]
+	binning_x: 0
+	binning_y: 0
+	roi: 
+	  x_offset: 0
+	  y_offset: 0
+	  height: 0
+	  width: 0
+	  do_rectify: False
+	```
+
+	我们建议每一只相机都需要单独进行内参标定，而不是使用统一的内参结果。这样可以提高外参标定的准确性。
+
+3. 初始外参文件
+
+	本工具需要用户提供初始的外参值作为参考。一个良好的初始值可以帮助算法得到更精确的结果。下面是一个正确的相机到激光雷达的初始外参文件样例，其中translation为相机相对激光雷达的平移距离关系，rotation为旋转矩阵的四元数表达形式：
+
+	```bash
+	header:
+	  seq: 0
+	  stamp:
+	    secs: 0
+	    nsecs: 0
+	  frame_id: velodyne64
+	child_frame_id: short_camera
+	transform:
+	  rotation:
+	    y: 0.5
+	    x: -0.5
+	    w: 0.5
+	    z: -0.5
+	  translation:
+	    x: 0.0
+	    y: 1.5
+	    z: 2.0
+	```
+
+	注意：相机到激光雷达的标定方法比较依赖于初始外参值的选取，一个偏差较大的外参，有可能导致标定失败。所以，请在条件允许的情况下，尽可能提供更加精准的初始外参值。
+
+4. 标定场地
+
+	我们的标定方法是基于自然场景的，所以一个理想的标定场地可以显著地提高标定结果的准确度。我们建议选取一个纹理丰富的场地，如有树木，电线杆，路灯，交通标志牌，静止的物体和清晰车道线。图1是一个较好的标定环境示例：
+
+	![](https://github.com/ApolloAuto/apollo/tree/master/docs/quickstart/images/calibration/sensor_calibration/calibration_place.png)
+	<p align="center"> 图1 一个良好的标定场地 </p>
+
+5. 所需Topics
+	
+	确认程序所需传感器数据的topics均有输出。如何查看传感器有数据输出？
+
+	各个程序所需的topics如下表1-表3所示：
+	
+	表1. 相机到相机标定所需topics
+
+	| 传感器       | Topic名称                                 |Topic发送频率（Hz）|
+	| ------------ | ----------------------------------------- | ----------------- |
+	| Short_Camera | /apollo/sensor/camera/traffic/image_short | 9                 |
+	| Long_Camera  | /apollo/sensor/camera/traffic/image_long  | 9                 |
+	| INS          | /apollo/sensor/gnss/odometry              | 100               |
+	| INS          | /apollo/sensor/gnss/ins_stat              | 2                 |
+
+	表2. 相机到64线激光雷达标定所需topics
+
+	| 传感器       | Topic名称                                 |Topic发送频率（Hz）|
+	| ------------ | ----------------------------------------- | ----------------- |
+	| Short_Camera | /apollo/sensor/camera/traffic/image_short | 9                 |
+	| LiDAR  | /apollo/sensor/velodyne64/compensator/PointCloud2  | 10                |
+	| INS          | /apollo/sensor/gnss/odometry              | 100               |
+	| INS          | /apollo/sensor/gnss/ins_stat              | 2                 |
+	
+	表3. 毫米波雷达到相机标定所需topics
+
+	| 传感器       | Topic名称                                 |Topic发送频率（Hz）|
+	| ------------ | ----------------------------------------- | ----------------- |
+	| Short_Camera | /apollo/sensor/camera/traffic/image_short | 9                 |
+	| INS          | /apollo/sensor/gnss/odometry              | 100               |
+	| INS          | /apollo/sensor/gnss/ins_stat              | 2                 |
+
+## 标定流程
+
+所有标定程序需要用到车辆的定位结果。请确认车辆定位状态为56，否则标定程序不会开始采集数据。输入以下命令可查询车辆定位状态：
+
+	```bash
+	rostopic echo /apollo/sensor/gnss/ins_stat
+    ```
+
+### 相机到相机
+
+1. 运行方法
+
+	使用以下命令来启动标定工具：
+	
+	```bash
+	cd /apollo/scripts
+	bash sensor_calibration.sh camera_camera
+	```
+
+2. 采集标定数据
+	* 由于两个相机的成像时间无法完全同步，所以在录制数据的时候，尽量将车辆进行慢速行驶，可以有效地缓解因时间差异所引起的图像不匹配问题。
+	* 两个相机需有尽量大的图像重叠区域，否则该工具将无法进行外参标定运算。
+
+3. 配置参数
+
+	配置文件保存在以下路径，详细说明请参照表4。
+	
+	```bash
+	/apollo/modules/calibration/camera_camera_calibrator/conf/camera_camera_calibrtor.conf
+	```
+
+	表4. 相机到相机标定程序配置项说明
+	
+	|配置项             | 说明               |
+	|----------------- | ----------------  |
+	|long_image_topic  | 长焦相机的图像topic |
+	|short_image_topic | 广角相机的图像topic |
+	|odometry_topic    | 车辆定位topic      |
+	|ins_stat_topic    | 车辆定位状态topic   |
+	|long_camera_intrinsics_filename  | 长焦相机的内参文件路径  |
+	|short_camera_intrinsics_filename | 广角相机的内参文件路径  |
+	|init_extrinsics_filename | 初始外参文件路径  |
+	|output_path	   | 标定结果输出路径    |
+	|max_speed_kmh     | 最大车速限制，单位km/h  |
+
+4. 输出内容
+
+	* 外参文件： 长焦相机到广角相机的外参文件。
+	* 验证参考图片：包括一张长焦相机图像、一张广角相机图像及一张长焦相机依据标定后的外参投影到广角相机的去畸变融合图像。
+
+### 相机到多线激光雷达
+
+1. 运行方法
+
+	使用以下命令来启动标定工具：
+	
+	```bash
+	cd /apollo/scripts
+	bash sensor_calibration.sh lidar_camera
+	```
+
+2. 采集标定数据
+	* 为避免时间戳不同步，在录制数据的时候，尽量将车辆进行慢速行驶，可以有效地缓解因时间差异所引起的标定问题。
+	* 相机中需看到一定数量的投影点云，否则该工具将无法进行外参标定运算。因此，我们建议使用短焦距相机来进行相机-激光雷达的标定。
+
+3. 配置参数
+
+	配置文件保存在以下路径，详细说明请参照表5。
+	
+	```bash
+	/apollo/modules/calibration/lidar_camera_calibrator/conf/lidar_camera_calibrtor.conf
+	```
+
+	表5. 相机到多线激光雷达标定程序配置项说明
+	
+	配置项 | 说明
+	--- | ---
+	image_topic | 相机的图像topic
+	lidar_topic | LiDAR的点云topic
+	odometry_topic | 车辆定位topic
+	ins_stat_topic | 车辆定位状态topic
+	camera_intrinsics_filename	| 相机的内参文件路径
+	init_extrinsics_filename | 初始外参文件路径
+	output_path	| 标定结果输出路径
+	calib_stop_count | 标定所需截取的数据站数
+	max_speed_kmh | 最大车速限制，单位km/h
+
+4. 输出内容
+	
+	* 外参文件：相机到多线激光雷达的外参文件。
+	* 验证参考图片：两张激光雷达点云利用标定结果外参投影到相机图像上的融合图像，分别是依据点云深度渲染的融合图像，和依据点云反射值渲染的融合图像。
+
+### 毫米波雷达到相机
+
+1. 运行方法
+
+	使用以下命令来启动标定工具：
+	
+	```bash
+	cd /apollo/scripts
+	bash sensor_calibration.sh radar_camera
+	```
+
+2. 采集标定数据
+
+	* 请将车辆进行低速直线行驶，标定程序仅会在该条件下开始采集数据。
+
+3. 配置参数
+
+	配置文件保存在以下路径，详细说明请参照表6。
+	
+	```bash
+	/apollo/modules/calibration/radar_camera_calibrator/conf/radar_camera_calibrtor.conf
+	```
+
+	表6. 相机到毫米波雷达标定程序配置项说明
+	
+	配置项 | 说明
+	--- | ---
+	image_topic | 相机的图像topic
+	radar_topic | Radar的数据topic
+	odometry_topic | 车辆定位topic
+	ins_stat_topic | 车辆定位状态topic
+	camera_intrinsics_filename	| 相机的内参文件路径
+	init_extrinsics_filename | 初始外参文件路径
+	output_path	| 标定结果输出路径
+	max_speed_kmh | 最大车速限制，单位km/h
+
+4. 输出内容
+	
+	* 外参文件：毫米波雷达到短焦相机的外参文件。
+	* 验证参考图片：将毫米波雷达投影到激光雷达坐标系的结果，需运行 `radar_lidar_visualizer` 工具。具体方法可参阅 `标定结果验证` 章节。
+
+## 标定结果获取
+
+所有标定结果均保存在配置文件中所设定的 `output` 路径下，标定后的外参以 `yaml` 格式的文件提供。此外，根据传感器的不同，标定结果会保存在 `output` 目录下的不同文件夹中，具体如表7所示：
+
+表7. 标定结果保存路径
+
+| 传感器        | 外参保存路径            |
+| ------------ | -----------------------|
+| Short_Camera | [output]/camera_params |
+| Long_Camera  | [output]/camera_params |
+| Radar        | [output]/radar_params  |
+
+## 标定结果验证
+
+当标定完成后，会在 `[output]/validation` 目录下生成相应的标定结果验证图片。下面会详细介绍每一类验证图片的基本原理和查看方法。
+
+### 相机到相机标定
+
+* 基本方法：根据长焦相机投影到短焦相机的融合图像进行判断，绿色通道为短焦相机图像，红色和蓝色通道是长焦投影后的图像，目视判断检验对齐情况。在融合图像中的融合区域，选择场景中距离较远处（50米以外）的景物进行对齐判断，能够重合则精度高，出现粉色或绿色重影（错位），则存在误差，当误差大于一定范围时（范围依据实际使用情况而定），标定失败，需重新标定（正常情况下，近处物体因受视差影响，在水平方向存在错位，且距离越近错位量越大，此为正常现象。垂直方向不受视差影响）。
+
+* 结果示例：如下图所示，图2为满足精度要求外参效果，图3为不满足精度要求的现象，请重新进行标定过程。
+
+![](https://github.com/ApolloAuto/apollo/tree/master/docs/quickstart/images/calibration/sensor_calibration/cam_cam_good.png)
+<p align="center"> 图2 良好的相机到相机标定结果 </p>
+
+![](https://github.com/ApolloAuto/apollo/tree/master/docs/quickstart/images/calibration/sensor_calibration/cam_cam_error.png)
+<p align="center"> 图3 错误的相机到相机标定结果 </p>
+
+### 相机到多线激光雷达标定
+
+* 基本方法：在产生的点云投影图像内，可寻找其中具有明显边缘的物体和标志物，查看其边缘轮廓对齐情况。如果50米以内的目标，点云边缘和图像边缘能够重合，则可以证明标定结果的精度很高。反之，若出现错位现象，则说明标定结果存在误差。当误差大于一定范围时（范围依据实际使用情况而定），该外参不可用。
+
+* 结果示例：如下图所示，图4为准确外参的点云投影效果，图5为有偏差外参的点云投影效果
+
+![](https://github.com/ApolloAuto/apollo/tree/master/docs/quickstart/images/calibration/sensor_calibration/cam_lidar_good.png)
+<p align="center"> 图4 良好的相机到多线激光雷达标定结果 </p>
+
+![](https://github.com/ApolloAuto/apollo/tree/master/docs/quickstart/images/calibration/sensor_calibration/cam_lidar_error.png)
+<p align="center"> 图5 错误的相机到多线激光雷达标定结果 </p>
+
+### 毫米波雷达到相机
+	
+* 基本方法：为了更好地验证毫米波雷达与相机间外参的标定结果，引入激光雷达作为桥梁，通过同一系统中毫米波雷达与相机的外参和相机与激光雷达的外参，计算得到毫米波雷达与激光雷达的外参，将毫米波雷达数据投影到激光雷达坐标系中与激光点云进行融合，并画出相应的鸟瞰图进行辅助验证。在融合图像中，白色点为激光雷达点云，绿色实心圆为毫米波雷达目标，通过图中毫米波雷达目标是否与激光雷达检测目标是否重合匹配进行判断，如果大部分目标均能对应匹配，则满足精度要求，否则不满足，需重新标定。
+
+* 结果示例：如下图所示，图6为满足精度要求外参效果，图7为不满足精度要求外参效果。
+
+![](https://github.com/ApolloAuto/apollo/tree/master/docs/quickstart/images/calibration/sensor_calibration/radar_cam_good.png)
+<p align="center"> 图6 良好的毫米波雷达到激光雷达投影结果 </p>
+
+![](https://github.com/ApolloAuto/apollo/tree/master/docs/quickstart/images/calibration/sensor_calibration/radar_cam_error.png)
+<p align="center"> 图7 错误的毫米波雷达到激光雷达投影结果 </p>
+
+* 注意事项：
+	* 为了得到毫米波雷达目标和激光雷达点云融合的验证图像，系统会自动或手动调用毫米波雷达到激光雷达的投影工具（`radar_lidar_visualizer`）进行图像绘制和生成过程。该投影工具在启动时会自动载入毫米波雷达与相机的外参文件及相机与激光雷达的外参文件，因此在启动之前，需要先进行相应的标定工具或将两文件以特定的文件名放在相应路径中，以备工具调用。
+
+	* 使用以下命令来启动 `radar_lidar_visualizer` 工具：
+	
+		```bash
+		cd /apollo/scripts
+		bash sensor_calibration.sh visualizer
+		```
+
+	* `radar_lidar_visualizer` 工具的配置文件在以下路径，详细说明请参照表8。
+	
+		```bash
+		/apollo/modules/calibration/radar_lidar_visualizer/conf/radar_lidar_visualizer.conf
+		```
+	
+		表8. 毫米波雷达到激光雷达投影工具配置项说明
+
+		配置项 | 说明
+		--- | ---
+		radar_topic | Radar的数据topic
+		lidar_topic | LiDAR的点云topic
+		radar_camera_extrinsics_filename | 毫米波雷达到相机的外参文件
+		camera_lidar_extrinsics_filename | 相机到激光雷达的外参文件
+		output_path	| 标定结果输出路径
+
+	* 验证图片同样保存在 `[output]/validation` 目录下。
 
 
